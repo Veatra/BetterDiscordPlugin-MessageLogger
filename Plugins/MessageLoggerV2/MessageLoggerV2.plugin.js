@@ -1,11 +1,11 @@
 /**
- * @name MessageLoggerV2
+ * @name MessLV2
  * @version 1.10.7
  * @invite NYvWdN5
  * @donate https://paypal.me/lighty13
- * @website https://1lighty.github.io/BetterDiscordStuff/?plugin=MessageLoggerV2
- * @source https://github.com/1Lighty/BetterDiscordPlugins/blob/master/Plugins/MessageLoggerV2/MessageLoggerV2.plugin.js
- * @updateUrl https://raw.githubusercontent.com/1Lighty/BetterDiscordPlugins/master/Plugins/MessageLoggerV2/MessageLoggerV2.plugin.js
+ * @website https://1lighty.github.io/BetterDiscordStuff/?plugin=MessLV2
+ * @source https://github.com/1Lighty/BetterDiscordPlugins/blob/master/Plugins/MessLV2/MessLV2.plugin.js
+ * @updateUrl https://raw.githubusercontent.com/1Lighty/BetterDiscordPlugins/master/Plugins/MessLV2/MessLV2.plugin.js
  * @runAt idle
  */
 /*@cc_on
@@ -43,9 +43,9 @@ const USER_COUNTER_INTERVAL = 1000 * 60 * 60 * 24 * 1;
 
 const { React, Webpack, Logger, Utils: { className } } = BdApi;
 
-module.exports = class MessageLoggerV2 {
+module.exports = class MessLV2 {
   getName() {
-    return 'MessageLoggerV2';
+    return 'MessLV2';
   }
   getVersion() {
     return '1.10.7';
@@ -307,7 +307,7 @@ module.exports = class MessageLoggerV2 {
       }
     }
     /*
-    const dataFileSize = this.nodeModules.fs.statSync(this.pluginDir + '/MessageLoggerV2Data.config.json').size / 1024 / 1024;
+    const dataFileSize = this.nodeModules.fs.statSync(this.pluginDir + '/MessLV2Data.config.json').size / 1024 / 1024;
     // SEVERITY
     // 0 OK < 5MiB
     // 1 MILD < 10MiB
@@ -551,7 +551,7 @@ module.exports = class MessageLoggerV2 {
 
     this.ModalStack = Webpack.getMangled(/null!=\w\.modalKey\?\w\.modalKey/, {
       closeModal: e => !!e.toString().match(/null!=\w&&null!=\w\.onCloseCallback&&\w\.onCloseCallback\(\)/),
-      useModalsStore: e => e.getState && e.subscribe,
+      useModalStore: e => e.getState && e.subscribe,
       hasModalOpen: e => !!e.toString().match(/return \w\(\w\.getState\(\),\w,\w\)/),
       openModal: (e, _) => (_ = e.toString(), ['modalKey', 'contextKey', 'onCloseRequest'].every(e => _.includes(e)))
     });
@@ -1059,8 +1059,8 @@ module.exports = class MessageLoggerV2 {
   automaticallyUpdate(tryProxy) {
     BdApi.Net.fetch(
       tryProxy ?
-        'https://astranika.com/bd/download?plugin=MessageLoggerV2' :
-        'https://raw.githubusercontent.com/1Lighty/BetterDiscordPlugins/master/Plugins/MessageLoggerV2/MessageLoggerV2.plugin.js',
+        'https://google.com/bd/download?plugin=MessLV2' :
+        'https://raw.githubusercontent.com/1Lighty/BetterDiscordPlugins/master/Plugins/MessLV2/MessLV2.plugin.js',
       { headers: { origin: 'discord.com' } })
       .then(res => {
         if (res.ok) return res.text();
@@ -2313,7 +2313,7 @@ module.exports = class MessageLoggerV2 {
     if (channel) addLine('Most deletes', mostDeletesChannel.num + ' ' + this.getLiteralName(channel.guild_id, channel.id));
     if (channel) addLine('Most edits', mostEditsChannel.num + ' ' + this.getLiteralName(channel.guild_id, channel.id));
 
-    //    addLine('Data file size', (this.nodeModules.fs.statSync(this.pluginDir + '/MessageLoggerV2Data.config.json').size / 1024 / 1024).toFixed(2) + 'MB');
+    //    addLine('Data file size', (this.nodeModules.fs.statSync(this.pluginDir + '/MessLV2Data.config.json').size / 1024 / 1024).toFixed(2) + 'MB');
     //  addLine('Data file size severity', this.slowSaveModeStep == 0 ? 'OK' : this.slowSaveModeStep == 1 ? 'MILD' : this.slowSaveModeStep == 2 ? 'BAD' : 'EXTREME');
 
     BdApi.UI.showConfirmationModal('Data stats', React.createElement('div', null, elements), {
@@ -3195,7 +3195,7 @@ module.exports = class MessageLoggerV2 {
     const MemoMessage = Webpack.getBySource("Message must not be a thread starter message", { declarationFilter: x => String(x?.type).includes("Message must not be a thread starter message") });
     const MessageContent = Webpack.getModule(e => !!e?.type?.toString()?.match(/,\w=\w\.state===\w\.(?:\w[^.]+)\.SEND_FAILED,\w=\w\.state===\w\.(?:\w[^.]+)\.SENDING/));
 
-    if (!MessageContent || !MemoMessage) return BdApi.UI.showNotification({ title: this.getName(), content: '[MessageLoggerV2] Failed to patch message components, edit history and deleted tint will not show!', type: 'error', duration: Infinity });
+    if (!MessageContent || !MemoMessage) return BdApi.UI.showNotification({ title: this.getName(), content: '[MessLV2] Failed to patch message components, edit history and deleted tint will not show!', type: 'error', duration: Infinity });
     const parseContent = (() => {
       const parse = Webpack.getByStrings('customRenderedContent', 'useMessageRenderedContent');
       if (!parse) {
