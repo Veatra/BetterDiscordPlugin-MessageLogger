@@ -1783,98 +1783,163 @@ module.exports = class MessLV2 {
   saveSettings() {
     BdApi.Data.save(this.getName(), 'settings', this.settings);
   }
+  /**
+   * Persists the current database after a bounded batching interval.
+   *
+   * Writes are synchronous and serialized by the renderer's event loop.
+   * The temporary file is in the same directory as the destination so
+   * replacement does not require copying across filesystems.
+   *
+   * On failure, keep the dirty flag set. A later save request retries.
+   * Never delete the main file as a fallback when replacement fails.
+   *
+   * @returns {boolean} Whether no pending changes remain.
+   */
   handleDataSaving() {
-    // saveData/setPluginData is synchronous, can get slow with bigger files
-    if (!this.handleDataSaving.errorPageClass) this.handleDataSaving.errorPageClass = '.' + this.getClass('errorPage');
-    /* refuse saving on error page */
-    if (!this.messageRecord || document.querySelector(this.handleDataSaving.errorPageClass)) return; /* did we crash? */
-    if (!Object.keys(this.messageRecord).length) return BdApi.Data.delete(this.getName() + 'Data', 'data');
-    const callback = err => {
-      if (err) {
-        BdApi.UI.showNotification({ title: this.getName(), content: 'There has been an error saving the data file', type: 'error' });
-        Logger.stacktrace(this.getName(), 'There has been an error saving the data file', err);
-      }
-      if (this.settings.autoBackup) {
-        if (this.saveBackupTimeout) this.autoBackupSaveInterupts++;
-        if (this.autoBackupSaveInterupts < 4) {
-          if (this.saveBackupTimeout) clearTimeout(this.saveBackupTimeout);
-          // 20 seconds after, in case shits going down y'know, better not to spam save and corrupt it, don't become the thing you're trying to eliminate
-          this.saveBackupTimeout = setTimeout(() => this.saveBackup(), 20 * 1000);
-        }
-      }
+    if (this.requestedDataSave) {
+      clearTimeout(this.requestedDataSave);
       this.requestedDataSave = 0;
-    };
-    const useEfficient = !window.ED;
-    if (useEfficient) {
-      this.efficientlySaveData(
-        this.getName() + 'Data',
-        'data',
-        {
-          messageRecord: this.messageRecord,
-          deletedMessageRecord: this.deletedMessageRecord,
-          editedMessageRecord: this.editedMessageRecord,
-          purgedMessageRecord: this.purgedMessageRecord
-        },
-        callback
-      );
-    } else {
-      BdApi.Data.save(this.getName() + 'Data', 'data', {
-        messageRecord: this.messageRecord,
-        deletedMessageRecord: this.deletedMessageRecord,
-        editedMessageRecord: this.editedMessageRecord,
-        purgedMessageRecord: this.purgedMessageRecord
-      });
-      callback();
     }
-  }
-  saveData() {
-    if (!this.settings.dontSaveData && !this.requestedDataSave) this.requestedDataSave = setTimeout(() => this.handleDataSaving(), 1000); // needs to be async
-  }
-  efficientlySaveData(name, key, data, callback) {
+
+    if (!this._dataSaveDirty) return true;
+
+    if (this.settings.dontSaveData || !this.messageRecord) {
+      return false;
+    }
+
+    const { fs, path } = this.nodeModules;
+    const destination = path.join(
+      this.pluginDir,
+      `${this.getName()}Data.config.json`
+    );
+    const temporary = destination + '.pending';
+
     try {
-      let loadedData;
-      try {
-        /* bd gay bruh */
-        loadedData = BdApi.Data.load(name, key);
-      } catch (err) { }
-      if (loadedData) for (const key in data) loadedData[key] = data[key];
-      this.nodeModules.fs.writeFile(this.nodeModules.path.join(this.pluginDir, `${name}.config.json`), JSON.stringify({ [key]: data }), callback);
-    } catch (e) {
-      BdApi.UI.showNotification({ title: this.getName(), content: 'There has been an error saving the data file', type: 'error' });
-      Logger.stacktrace(this.getName(), 'There has been an error saving the data file', e);
-    }
-  }
-  saveBackup() {
-    const callback = err => {
-      if (err) {
-        BdApi.UI.showNotification({ title: this.getName(), content: 'There has been an error saving the data file', type: 'error' });
-        Logger.stacktrace(this.getName(), 'There has been an error saving the data file', err);
-      }
-      this.saveBackupTimeout = 0;
-      this.autoBackupSaveInterupts = 0;
-      if (!this.loadData(this.getName() + 'DataBackup', 'data').messageRecord) this.saveBackupTimeout = setTimeout(() => this.saveBackup, 300); // don't be taxing
-    };
-    const useEfficient = !window.ED;
-    if (useEfficient) {
-      this.efficientlySaveData(
-        this.getName() + 'DataBackup',
-        'data',
-        {
+      const serialized = JSON.stringify({
+        data: {
           messageRecord: this.messageRecord,
           deletedMessageRecord: this.deletedMessageRecord,
           editedMessageRecord: this.editedMessageRecord,
           purgedMessageRecord: this.purgedMessageRecord
-        },
-        callback
-      );
-    } else {
-      BdApi.Data.save(this.getName() + 'DataBackup', 'data', {
-        messageRecord: this.messageRecord,
-        deletedMessageRecord: this.deletedMessageRecord,
-        editedMessageRecord: this.editedMessageRecord,
-        purgedMessageRecord: this.purgedMessageRecord
+        }
       });
-      callback();
+
+      // Persist empty collections too. Clearing the logs must survive
+      // a restart rather than accidentally restoring an older database.
+      fs.writeFileSync(temporary, serialized, 'utf8');
+      fs.renameSync(temporary, destination);
+
+      this._dataSaveDirty = false;
+      this._dataSaveErrorShown = false;
+      return true;
+    } catch (error) {
+      Logger.stacktrace(
+        this.getName(),
+        'Unable to save the message database; pending changes remain in memory.',
+        error
+      );
+
+      if (!this._dataSaveErrorShown) {
+        this._dataSaveErrorShown = true;
+        BdApi.UI.showNotification({
+          title: this.getName(),
+          content:
+            'Saving the message database failed. Pending changes remain in memory. Check the console and disk access.',
+          type: 'error'
+        });
+      }
+
+      return false;
+    }
+  }
+
+  /**
+   * Marks the database dirty and schedules one bounded flush.
+   *
+   * Subsequent requests reuse the timer instead of postponing it.
+   * This batches complete database rewrites without keeping an extra
+   * queue or copy of every incoming message.
+   *
+   * An abrupt renderer crash can lose changes since the last flush.
+   *
+   * @returns {void}
+   */
+  saveData() {
+    if (this.settings.dontSaveData) return;
+
+    this._dataSaveDirty = true;
+    if (this.requestedDataSave) return;
+
+    this.requestedDataSave = setTimeout(
+      () => this.handleDataSaving(),
+      60000
+    );
+  }
+
+  /**
+   * Creates at most one backup snapshot during this plugin start.
+   *
+   * Read and validate the current on-disk main database before touching
+   * the existing backup. Copy through a temporary file so a failed copy
+   * does not truncate a previously useful backup.
+   *
+   * A malformed or absent main file leaves the existing backup intact.
+   * A failed attempt is not retried automatically during the session.
+   *
+   * @returns {void}
+   */
+  saveBackup() {
+    if (this.settings.dontSaveData || !this.settings.autoBackup) return;
+    if (this._startupBackupAttempted) return;
+
+    this._startupBackupAttempted = true;
+
+    const { fs, path } = this.nodeModules;
+    const source = path.join(
+      this.pluginDir,
+      `${this.getName()}Data.config.json`
+    );
+    const destination = path.join(
+      this.pluginDir,
+      `${this.getName()}DataBackup.config.json`
+    );
+    const temporary = destination + '.pending';
+
+    try {
+      if (!fs.existsSync(source)) return;
+
+      const serialized = fs.readFileSync(source, 'utf8');
+      const data = JSON.parse(serialized)?.data;
+      const fields = [
+        'messageRecord',
+        'deletedMessageRecord',
+        'editedMessageRecord',
+        'purgedMessageRecord'
+      ];
+
+      if (!data || !fields.every(field =>
+        data[field] &&
+        typeof data[field] === 'object' &&
+        !Array.isArray(data[field])
+      )) {
+        throw new Error(
+          'The current main database has an invalid structure. Existing backup preserved.'
+        );
+      }
+
+      fs.writeFileSync(temporary, serialized, 'utf8');
+      fs.renameSync(temporary, destination);
+
+      Logger.info(
+        this.getName(),
+        'Created the startup database backup. No further backup writes will occur during this plugin start.'
+      );
+    } catch (error) {
+      Logger.stacktrace(
+        this.getName(),
+        'Startup backup failed. Existing backup preserved.',
+        error
+      );
     }
   }
   parseHTML(html) {
