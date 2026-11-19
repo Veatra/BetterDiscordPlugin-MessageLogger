@@ -165,6 +165,9 @@ module.exports = class MessLV2 {
       savedMessagesCap: 10000,
       reverseOrder: true,
       onlyLogWhitelist: true,
+      // Explicit edit-history overrides for whitelisted server/channel IDs.
+      // Missing entries preserve the original behavior of recording edits.
+      whitelistEditLogging: {},
       whitelist: [],
       blacklist: [],
       notificationBlacklist: [],
@@ -3121,7 +3124,40 @@ module.exports = class MessLV2 {
 
         const last = this.getCachedMessage(dispatch.message.id, channel.id);
         const lastEditedSaved = this.getEditedMessage(dispatch.message.id, channel.id);
+        const editOverrides = this.settings.whitelistEditLogging || {};
+        const hasOverride = id =>
+          Object.prototype.hasOwnProperty.call(editOverrides, id);
 
+        let recordEditHistory = true;
+
+        if (channelWhitelisted && hasOverride(channel.id)) {
+          recordEditHistory = editOverrides[channel.id] !== false;
+        } else if (guildWhitelisted && hasOverride(guild.id)) {
+          recordEditHistory = editOverrides[guild.id] !== false;
+        }
+
+        if (!recordEditHistory) {
+          // Keep the latest known content available for later deletion
+          // logging, without appending an edit-history entry.
+          if (typeof dispatch.message.content === 'string') {
+            if (last) {
+              last.content = dispatch.message.content;
+              last.edited_timestamp = dispatch.message.edited_timestamp;
+            }
+
+            // Previously saved records can still need their latest content
+            // updated. Preserve their old history without extending it.
+            if (lastEditedSaved?.message) {
+              lastEditedSaved.message.content = dispatch.message.content;
+              lastEditedSaved.message.edited_timestamp =
+                dispatch.message.edited_timestamp;
+              this.saveData();
+            }
+          }
+
+          return callDefault(...args);
+        }
+        
         if (lastEditedSaved && !lastEditedSaved.message.edited_timestamp) lastEditedSaved.message.edited_timestamp = dispatch.message.edited_timestamp;
 
         // if we have lastEdited then we can still continue as we have all the data we need to process it.
@@ -4846,6 +4882,28 @@ Pro tip: Right clicking the icon will filter the messages to the current channel
       const addElement = (label, action, options = {}) => newItems.push({ label, action, ...options });
       const whitelistIdx = this.settings.whitelist.findIndex(m => m === id);
       const blacklistIdx = this.settings.blacklist.findIndex(m => m === id);
+      if (whitelistIdx !== -1) {
+        const overrides = this.settings.whitelistEditLogging || {};
+        const enabled = overrides[id] !== false;
+
+        addElement(
+          enabled
+            ? 'Disable Edit History Here'
+            : 'Enable Edit History Here',
+          () => {
+            this.settings.whitelistEditLogging = {
+              ...(this.settings.whitelistEditLogging || {}),
+              [id]: !enabled
+            };
+            this.saveSettings();
+
+            BdApi.UI.showToast(
+              enabled ? 'Edit history disabled here.' : 'Edit history enabled here.',
+              { type: 'success' }
+            );
+          }
+        );
+      }
       if (whitelistIdx == -1 && blacklistIdx == -1) {
         addElement(
           `Add to Whitelist`,
