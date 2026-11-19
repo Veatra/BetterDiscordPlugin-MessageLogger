@@ -285,15 +285,35 @@ module.exports = class MessLV2 {
         }
       );
     };
+    // Persistence state belongs to this plugin start. Clear a leftover
+    // timer before resetting state if the same instance is restarted.
+    if (this.requestedDataSave) {
+      clearTimeout(this.requestedDataSave);
+    }
+    if (this.saveBackupTimeout) {
+      clearTimeout(this.saveBackupTimeout);
+    }
+
+    this.requestedDataSave = 0;
+    this.saveBackupTimeout = 0;
+    this._dataSaveDirty = false;
+    this._dataSaveErrorShown = false;
+    this._startupBackupAttempted = false;
+
+    // Snapshot the current main file before migrations or new saves.
+    // Validation inside saveBackup preserves an existing backup when
+    // the main file is malformed.
+    this.saveBackup();
+
     let data;
     if (this.settings.dontSaveData) {
       data = defaultConstruct();
     } else {
-      data = this.loadData(this.getName() + 'Data', 'data', defaultConstruct());
+      data = this.loadData(this.getName() + 'Data', 'data');
       const isBad = map => !(map && map.messageRecord && map.editedMessageRecord && map.deletedMessageRecord && map.purgedMessageRecord && typeof map.messageRecord == 'object' && typeof map.editedMessageRecord == 'object' && typeof map.deletedMessageRecord == 'object' && typeof map.purgedMessageRecord == 'object');
       if (isBad(data)) {
         if (this.settings.autoBackup) {
-          data = this.loadData(this.getName() + 'Data', 'data', defaultConstruct());
+          data = this.loadData(this.getName() + 'DataBackup', 'data');
           if (isBad(data)) {
             BdApi.UI.showNotification({ title: this.getName(), content: `Data and backup files were corrupted. All deleted/edited/purged messages have been erased.`, duration: Infinity, type: 'error' });
             data = defaultConstruct();
@@ -1018,6 +1038,19 @@ module.exports = class MessLV2 {
   }
   shutdown() {
     this.__started = false;
+
+    // Flush before teardown. Renderer crashes and forced termination
+    // cannot guarantee that shutdown runs.
+    this.handleDataSaving();
+
+    if (this.requestedDataSave) {
+      clearTimeout(this.requestedDataSave);
+      this.requestedDataSave = 0;
+    }
+    if (this.saveBackupTimeout) {
+      clearTimeout(this.saveBackupTimeout);
+      this.saveBackupTimeout = 0;
+    }
     const tryUnpatch = fn => {
       if (typeof fn !== 'function') return;
       try {
@@ -1768,18 +1801,47 @@ module.exports = class MessLV2 {
       return '';
     }
   };
+  /**
+   * Reads persisted data directly from disk so startup sees the latest
+   * database written by the batched saver.
+   *
+   * Missing or unreadable data returns an empty object, allowing startup
+   * validation to attempt backup recovery.
+   *
+   * @param {string} name Configuration filename without its extension.
+   * @param {string} key Property containing the saved data.
+   * @param {object} [defaultData] Optional defaults for successful reads.
+   * @returns {object} Loaded data or an empty object on failure.
+   */
   loadData(name, key, defaultData) {
     const { lodash } = this;
+
     try {
-      return lodash.mergeWith(defaultData ? lodash.cloneDeep(defaultData) : {}, BdApi.Data.load(name, key), (_, b) => {
-        if (lodash.isArray(b)) return b;
-      });
+      const raw = this.nodeModules.fs.readFileSync(
+        this.nodeModules.path.join(this.pluginDir, `${name}.config.json`),
+        'utf8'
+      );
+
+      return lodash.mergeWith(
+        defaultData ? lodash.cloneDeep(defaultData) : {},
+        JSON.parse(raw)?.[key],
+        (_, value) => {
+          // Replace saved arrays instead of merging them by index.
+          if (lodash.isArray(value)) return value;
+        }
+      );
     } catch (err) {
-      Logger.error(this.getName(), 'Unable to load data: ', err);
-      if (returnNull) return null;
-      return lodash.cloneDeep(defaultData);
+      // A first launch may legitimately have no data file.
+      if (err?.code !== 'ENOENT') {
+        Logger.error(this.getName(), 'Unable to load data: ', err);
+      }
+
+      // An empty result lets startup's existing structure validation
+      // attempt backup recovery instead of hiding a failed read.
+      return {};
     }
   }
+
   saveSettings() {
     BdApi.Data.save(this.getName(), 'settings', this.settings);
   }
